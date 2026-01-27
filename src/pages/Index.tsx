@@ -1,15 +1,19 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Shield, Eye, EyeOff, Github, Info } from 'lucide-react';
+import { Shield, Eye, EyeOff, Github, Info, Image, Film } from 'lucide-react';
 import { ModeToggle } from '@/components/ModeToggle';
 import { EncodePanel } from '@/components/EncodePanel';
 import { DecodePanel } from '@/components/DecodePanel';
+import { VideoEncodePanel } from '@/components/VideoEncodePanel';
+import { VideoDecodePanel } from '@/components/VideoDecodePanel';
+import { MediaTypeToggle, MediaType } from '@/components/MediaTypeToggle';
 import { HeroBackground } from '@/components/HeroBackground';
 
 type Mode = 'encode' | 'decode';
 
 const Index = () => {
   const [mode, setMode] = useState<Mode>('encode');
+  const [mediaType, setMediaType] = useState<MediaType>('image');
 
   return (
     <div className="min-h-screen relative">
@@ -36,7 +40,7 @@ const Index = () => {
           </h1>
           
           <p className="text-lg text-muted-foreground max-w-md mx-auto">
-            Hide secret messages within images using advanced LSB steganography. 
+            Hide secret messages within images and videos using advanced LSB steganography. 
             Your data stays private—no servers, no traces.
           </p>
         </motion.header>
@@ -48,6 +52,9 @@ const Index = () => {
           transition={{ delay: 0.1 }}
           className="card-gradient rounded-2xl border border-border shadow-card p-6 md:p-8"
         >
+          {/* Media Type Toggle */}
+          <MediaTypeToggle mediaType={mediaType} onMediaTypeChange={setMediaType} />
+
           {/* Mode Toggle */}
           <div className="mb-8">
             <ModeToggle mode={mode} onModeChange={setMode} />
@@ -56,13 +63,17 @@ const Index = () => {
           {/* Panel Content */}
           <AnimatePresence mode="wait">
             <motion.div
-              key={mode}
+              key={`${mediaType}-${mode}`}
               initial={{ opacity: 0, x: mode === 'encode' ? -20 : 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: mode === 'encode' ? 20 : -20 }}
               transition={{ duration: 0.2 }}
             >
-              {mode === 'encode' ? <EncodePanel /> : <DecodePanel />}
+              {mediaType === 'image' ? (
+                mode === 'encode' ? <EncodePanel /> : <DecodePanel />
+              ) : (
+                mode === 'encode' ? <VideoEncodePanel /> : <VideoDecodePanel />
+              )}
             </motion.div>
           </AnimatePresence>
         </motion.div>
@@ -120,12 +131,24 @@ const Index = () => {
             <Info className="w-4 h-4 text-primary" />
             <h2 className="font-semibold text-foreground">How It Works</h2>
           </div>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            StegoVault uses <span className="text-primary font-medium">Least Significant Bit (LSB)</span> steganography 
-            to embed your secret text into image pixels. Each pixel's color values are 
-            slightly modified to store binary data—a change so subtle it's invisible to the eye. 
-            The encoded image looks identical to the original but carries your hidden message.
-          </p>
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <Image className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                <span className="text-foreground font-medium">Image Steganography:</span>{' '}
+                Uses <span className="text-primary font-medium">LSB (Least Significant Bit)</span> technique 
+                to embed text into pixel RGB values. The output is a lossless PNG to preserve data integrity.
+              </p>
+            </div>
+            <div className="flex items-start gap-3">
+              <Film className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                <span className="text-foreground font-medium">Video Steganography:</span>{' '}
+                Extracts video frames and applies LSB encoding to the first frame. 
+                Outputs as PNG to prevent compression from destroying hidden data.
+              </p>
+            </div>
+          </div>
         </motion.div>
 
         {/* Footer */}
