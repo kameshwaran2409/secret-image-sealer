@@ -8,6 +8,7 @@ import { VideoEncodePanel } from '@/components/VideoEncodePanel';
 import { VideoDecodePanel } from '@/components/VideoDecodePanel';
 import { MediaTypeToggle, MediaType } from '@/components/MediaTypeToggle';
 import { HeroBackground } from '@/components/HeroBackground';
+import { UserMenu } from '@/components/UserMenu';
 
 type Mode = 'encode' | 'decode';
 
@@ -18,6 +19,11 @@ const Index = () => {
   return (
     <div className="min-h-screen relative">
       <HeroBackground />
+
+      {/* User Menu - Fixed Position */}
+      <div className="absolute top-4 right-4 z-10">
+        <UserMenu />
+      </div>
       
       <div className="container max-w-2xl mx-auto px-4 py-12">
         {/* Header */}
