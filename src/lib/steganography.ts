@@ -1,24 +1,32 @@
-// LSB Steganography Implementation
+// LSB Steganography Implementation - Cross-Environment Compatible
 
 const DELIMITER = '$$END$$';
+const MAGIC_HEADER = 'STEGO1'; // Version identifier for compatibility
 
 /**
- * Converts text to binary string
+ * Converts text to binary string using UTF-8 encoding
+ * This ensures consistent encoding across all environments
  */
 function textToBinary(text: string): string {
-  return text
-    .split('')
-    .map((char) => char.charCodeAt(0).toString(2).padStart(8, '0'))
-    .join('');
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += bytes[i].toString(2).padStart(8, '0');
+  }
+  return binary;
 }
 
 /**
- * Converts binary string back to text
+ * Converts binary string back to text using UTF-8 decoding
  */
 function binaryToText(binary: string): string {
   const bytes = binary.match(/.{1,8}/g);
   if (!bytes) return '';
-  return bytes.map((byte) => String.fromCharCode(parseInt(byte, 2))).join('');
+  
+  const byteArray = new Uint8Array(bytes.map((byte) => parseInt(byte, 2)));
+  const decoder = new TextDecoder('utf-8');
+  return decoder.decode(byteArray);
 }
 
 /**
@@ -27,27 +35,76 @@ function binaryToText(binary: string): string {
 export function calculateCapacity(width: number, height: number): number {
   // Each pixel has 4 channels (RGBA), we use 3 (RGB)
   // Each channel stores 1 bit of data
-  // 8 bits = 1 character
+  // 8 bits = 1 byte (UTF-8 can be multi-byte)
   const totalBits = width * height * 3;
+  const headerBits = (MAGIC_HEADER.length + 4) * 8; // Header + length prefix
   const delimiterBits = DELIMITER.length * 8;
-  return Math.floor((totalBits - delimiterBits) / 8);
+  // Conservative estimate for UTF-8 (assuming mostly ASCII)
+  return Math.floor((totalBits - headerBits - delimiterBits) / 8);
+}
+
+/**
+ * Creates a consistent ImageData without browser-specific color management
+ */
+function createRawCanvas(width: number, height: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  
+  const ctx = canvas.getContext('2d', {
+    willReadFrequently: true,
+    colorSpace: 'srgb',
+    // Disable alpha premultiplication for consistent pixel values
+  });
+  
+  if (!ctx) {
+    throw new Error('Could not get canvas context');
+  }
+  
+  // Disable image smoothing for exact pixel values
+  ctx.imageSmoothingEnabled = false;
+  
+  return { canvas, ctx };
 }
 
 /**
  * Encodes secret text into image data using LSB steganography
+ * Uses a header-based format for reliable cross-environment decoding
  */
 export function encodeText(
   imageData: ImageData,
   secretText: string
 ): ImageData {
-  const textWithDelimiter = secretText + DELIMITER;
-  const binaryText = textToBinary(textWithDelimiter);
+  // Create message with header: MAGIC + length (4 bytes) + message + delimiter
+  const fullMessage = secretText + DELIMITER;
+  const encoder = new TextEncoder();
+  const messageBytes = encoder.encode(fullMessage);
   
-  const maxCapacity = calculateCapacity(imageData.width, imageData.height);
-  if (textWithDelimiter.length > maxCapacity) {
-    throw new Error(`Text too long. Maximum capacity: ${maxCapacity} characters`);
+  // Create header: magic + 4-byte length
+  const headerBytes = encoder.encode(MAGIC_HEADER);
+  const lengthBytes = new Uint8Array(4);
+  const dataView = new DataView(lengthBytes.buffer);
+  dataView.setUint32(0, messageBytes.length, false); // Big-endian for consistency
+  
+  // Combine all bytes
+  const totalBytes = new Uint8Array(headerBytes.length + lengthBytes.length + messageBytes.length);
+  totalBytes.set(headerBytes, 0);
+  totalBytes.set(lengthBytes, headerBytes.length);
+  totalBytes.set(messageBytes, headerBytes.length + lengthBytes.length);
+  
+  // Convert to binary
+  let binaryText = '';
+  for (let i = 0; i < totalBytes.length; i++) {
+    binaryText += totalBytes[i].toString(2).padStart(8, '0');
+  }
+  
+  const maxBits = imageData.width * imageData.height * 3;
+  if (binaryText.length > maxBits) {
+    const maxChars = Math.floor((maxBits / 8) - headerBytes.length - lengthBytes.length - DELIMITER.length);
+    throw new Error(`Text too long. Maximum capacity: ${maxChars} characters`);
   }
 
+  // Create a new array to avoid modifying the original
   const data = new Uint8ClampedArray(imageData.data);
   let binaryIndex = 0;
 
@@ -69,8 +126,91 @@ export function encodeText(
 
 /**
  * Decodes hidden text from image data using LSB steganography
+ * Uses header-based format for reliable cross-environment decoding
  */
 export function decodeText(imageData: ImageData): string {
+  const data = imageData.data;
+  let binaryText = '';
+  let extractedBytes: number[] = [];
+
+  // First, extract enough bits for the header (MAGIC + 4 bytes length)
+  const headerSize = MAGIC_HEADER.length + 4;
+  const headerBits = headerSize * 8;
+  
+  for (let i = 0; i < data.length && binaryText.length < headerBits; i++) {
+    // Skip alpha channel
+    if ((i + 1) % 4 === 0) continue;
+    binaryText += (data[i] & 1).toString();
+  }
+  
+  // Convert header bits to bytes
+  const headerBytes = binaryText.match(/.{1,8}/g);
+  if (!headerBytes || headerBytes.length < headerSize) {
+    throw new Error('No hidden message found in this image');
+  }
+  
+  for (let j = 0; j < headerSize; j++) {
+    extractedBytes.push(parseInt(headerBytes[j], 2));
+  }
+  
+  // Check magic header
+  const decoder = new TextDecoder('utf-8');
+  const magicBytes = new Uint8Array(extractedBytes.slice(0, MAGIC_HEADER.length));
+  const magic = decoder.decode(magicBytes);
+  
+  if (magic !== MAGIC_HEADER) {
+    // Fallback: Try legacy format (no header, just message with delimiter)
+    return decodeLegacyFormat(imageData);
+  }
+  
+  // Read message length
+  const lengthBytes = new Uint8Array(extractedBytes.slice(MAGIC_HEADER.length, MAGIC_HEADER.length + 4));
+  const lengthView = new DataView(lengthBytes.buffer);
+  const messageLength = lengthView.getUint32(0, false);
+  
+  // Validate length
+  const maxPossibleLength = Math.floor((data.length * 3) / (4 * 8));
+  if (messageLength > maxPossibleLength || messageLength > 10000000) {
+    throw new Error('Invalid message length detected');
+  }
+  
+  // Continue extracting the message
+  const totalBitsNeeded = (headerSize + messageLength) * 8;
+  let bitIndex = 0;
+  binaryText = '';
+  
+  for (let i = 0; i < data.length && binaryText.length < totalBitsNeeded; i++) {
+    if ((i + 1) % 4 === 0) continue;
+    binaryText += (data[i] & 1).toString();
+    bitIndex++;
+  }
+  
+  // Extract message bytes
+  const allBytes = binaryText.match(/.{1,8}/g);
+  if (!allBytes) {
+    throw new Error('Failed to extract message');
+  }
+  
+  const messageStartIndex = headerSize;
+  const messageEndIndex = headerSize + messageLength;
+  const messageByteStrings = allBytes.slice(messageStartIndex, messageEndIndex);
+  
+  const messageBytes = new Uint8Array(messageByteStrings.map(b => parseInt(b, 2)));
+  let message = decoder.decode(messageBytes);
+  
+  // Remove delimiter if present
+  if (message.endsWith(DELIMITER)) {
+    message = message.slice(0, -DELIMITER.length);
+  }
+  
+  return message;
+}
+
+/**
+ * Fallback decoder for images encoded without the header format
+ * Maintains backward compatibility
+ */
+function decodeLegacyFormat(imageData: ImageData): string {
   const data = imageData.data;
   let binaryText = '';
   let text = '';
@@ -84,12 +224,31 @@ export function decodeText(imageData: ImageData): string {
 
     // Every 8 bits, convert to character and check for delimiter
     if (binaryText.length % 8 === 0) {
-      const char = binaryToText(binaryText.slice(-8));
-      text += char;
+      const byte = binaryText.slice(-8);
+      const charCode = parseInt(byte, 2);
+      
+      // Only accept printable ASCII and common Unicode
+      if (charCode >= 32 && charCode <= 126) {
+        text += String.fromCharCode(charCode);
+      } else if (charCode > 0) {
+        // Try UTF-8 aware decoding for non-ASCII
+        try {
+          const decoder = new TextDecoder('utf-8', { fatal: true });
+          const bytes = new Uint8Array([charCode]);
+          text += decoder.decode(bytes);
+        } catch {
+          text += String.fromCharCode(charCode);
+        }
+      }
       
       // Check if we've found the delimiter
       if (text.endsWith(DELIMITER)) {
         return text.slice(0, -DELIMITER.length);
+      }
+      
+      // Safety limit to prevent infinite loops
+      if (text.length > 1000000) {
+        break;
       }
     }
   }
@@ -98,9 +257,41 @@ export function decodeText(imageData: ImageData): string {
 }
 
 /**
- * Loads an image file and returns its ImageData
+ * Loads an image file and returns its ImageData with consistent processing
  */
 export function loadImage(file: File): Promise<{ imageData: ImageData; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    // Use createImageBitmap for more consistent cross-browser behavior when available
+    if (typeof createImageBitmap !== 'undefined' && file.type !== 'image/gif') {
+      createImageBitmap(file, {
+        premultiplyAlpha: 'none',
+        colorSpaceConversion: 'none',
+      })
+        .then((bitmap) => {
+          const { canvas, ctx } = createRawCanvas(bitmap.width, bitmap.height);
+          ctx.drawImage(bitmap, 0, 0);
+          const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+          bitmap.close();
+          resolve({
+            imageData,
+            width: bitmap.width,
+            height: bitmap.height,
+          });
+        })
+        .catch(() => {
+          // Fallback to Image element
+          loadImageFallback(file).then(resolve).catch(reject);
+        });
+    } else {
+      loadImageFallback(file).then(resolve).catch(reject);
+    }
+  });
+}
+
+/**
+ * Fallback image loading using Image element
+ */
+function loadImageFallback(file: File): Promise<{ imageData: ImageData; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     
@@ -108,16 +299,7 @@ export function loadImage(file: File): Promise<{ imageData: ImageData; width: nu
       const img = new Image();
       
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Could not get canvas context'));
-          return;
-        }
-        
+        const { canvas, ctx } = createRawCanvas(img.width, img.height);
         ctx.drawImage(img, 0, 0);
         const imageData = ctx.getImageData(0, 0, img.width, img.height);
         
@@ -138,20 +320,11 @@ export function loadImage(file: File): Promise<{ imageData: ImageData; width: nu
 }
 
 /**
- * Converts ImageData to a downloadable PNG blob
+ * Converts ImageData to a downloadable PNG blob with lossless encoding
  */
 export function imageDataToBlob(imageData: ImageData): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      reject(new Error('Could not get canvas context'));
-      return;
-    }
-    
+    const { canvas, ctx } = createRawCanvas(imageData.width, imageData.height);
     ctx.putImageData(imageData, 0, 0);
     
     canvas.toBlob(
@@ -162,7 +335,7 @@ export function imageDataToBlob(imageData: ImageData): Promise<Blob> {
           reject(new Error('Failed to create blob'));
         }
       },
-      'image/png',
+      'image/png', // PNG is lossless, preserving LSB data
       1.0
     );
   });

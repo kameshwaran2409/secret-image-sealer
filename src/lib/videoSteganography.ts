@@ -1,8 +1,7 @@
 // Video Steganography Implementation using Frame-Based LSB
+// Cross-Environment Compatible
 
 import { encodeText, decodeText, calculateCapacity } from './steganography';
-
-const FRAME_INTERVAL = 1; // Process every N-th frame (1 = all frames)
 
 export interface VideoFrame {
   imageData: ImageData;
@@ -18,7 +17,29 @@ export interface VideoMetadata {
 }
 
 /**
- * Extracts frames from a video file
+ * Creates a raw canvas for consistent pixel handling
+ */
+function createRawCanvas(width: number, height: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  
+  const ctx = canvas.getContext('2d', {
+    willReadFrequently: true,
+    colorSpace: 'srgb',
+  });
+  
+  if (!ctx) {
+    throw new Error('Could not get canvas context');
+  }
+  
+  ctx.imageSmoothingEnabled = false;
+  
+  return { canvas, ctx };
+}
+
+/**
+ * Extracts frames from a video file with consistent pixel handling
  */
 export async function extractFrames(
   file: File,
@@ -27,27 +48,20 @@ export async function extractFrames(
 ): Promise<{ frames: VideoFrame[]; metadata: VideoMetadata }> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) {
-      reject(new Error('Could not get canvas context'));
-      return;
-    }
 
     video.preload = 'metadata';
     video.muted = true;
     video.playsInline = true;
+    video.crossOrigin = 'anonymous';
 
     const url = URL.createObjectURL(file);
     video.src = url;
 
     video.onloadedmetadata = async () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const { canvas, ctx } = createRawCanvas(video.videoWidth, video.videoHeight);
 
       const duration = video.duration;
-      const estimatedFps = 30; // Assume 30 fps for estimation
+      const estimatedFps = 30;
       const totalFrames = Math.min(Math.floor(duration * estimatedFps), maxFrames);
       const frameInterval = duration / totalFrames;
 
@@ -71,7 +85,7 @@ export async function extractFrames(
           const frame = await captureFrame(currentTime);
           frames.push(frame);
           currentTime += frameInterval;
-          onProgress?.(((i + 1) / totalFrames) * 50); // First 50% is extraction
+          onProgress?.(((i + 1) / totalFrames) * 50);
         }
 
         URL.revokeObjectURL(url);
@@ -108,7 +122,6 @@ export function calculateVideoCapacity(frames: VideoFrame[]): number {
     frames[0].imageData.width,
     frames[0].imageData.height
   );
-  // Use only first frame for encoding to keep it simple and reliable
   return frameCapacity;
 }
 
@@ -129,7 +142,6 @@ export function encodeTextInFrames(
     throw new Error(`Text too long. Maximum capacity: ${capacity} characters`);
   }
 
-  // Encode text in the first frame only
   const encodedFrames = frames.map((frame, index) => {
     if (index === 0) {
       const encodedImageData = encodeText(frame.imageData, secretText);
@@ -151,7 +163,6 @@ export function decodeTextFromFrames(frames: VideoFrame[]): string {
     throw new Error('No frames to decode');
   }
 
-  // Try to decode from the first frame
   try {
     return decodeText(frames[0].imageData);
   } catch {
@@ -160,29 +171,16 @@ export function decodeTextFromFrames(frames: VideoFrame[]): string {
 }
 
 /**
- * Creates a video blob from encoded frames
- * Note: This creates an animated sequence as WebM
+ * Creates a PNG blob from encoded frame for lossless export
  */
 export async function framesToVideoBlob(
   frames: VideoFrame[],
   fps: number = 30,
   onProgress?: (progress: number) => void
 ): Promise<Blob> {
-  // For browser compatibility, we'll create a series of PNG frames
-  // and package them. For now, we'll output the first frame as PNG
-  // since true video encoding requires MediaRecorder with specific codec support
-  
-  const canvas = document.createElement('canvas');
-  canvas.width = frames[0].imageData.width;
-  canvas.height = frames[0].imageData.height;
-  const ctx = canvas.getContext('2d');
-  
-  if (!ctx) {
-    throw new Error('Could not get canvas context');
-  }
+  const { canvas, ctx } = createRawCanvas(frames[0].imageData.width, frames[0].imageData.height);
 
-  // For reliable output, we'll create a downloadable PNG of the encoded frame
-  // This ensures the hidden data is preserved (video compression would destroy it)
+  // Output as lossless PNG to preserve hidden data
   ctx.putImageData(frames[0].imageData, 0, 0);
   
   return new Promise((resolve, reject) => {
@@ -221,13 +219,6 @@ export function downloadVideoBlob(blob: Blob, filename: string): void {
 export function getVideoThumbnail(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) {
-      reject(new Error('Could not get canvas context'));
-      return;
-    }
 
     video.preload = 'metadata';
     video.muted = true;
@@ -237,12 +228,11 @@ export function getVideoThumbnail(file: File): Promise<string> {
     video.src = url;
 
     video.onloadedmetadata = () => {
-      video.currentTime = 0.1; // Get frame slightly after start
+      video.currentTime = 0.1;
     };
 
     video.onseeked = () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const { canvas, ctx } = createRawCanvas(video.videoWidth, video.videoHeight);
       ctx.drawImage(video, 0, 0);
       URL.revokeObjectURL(url);
       resolve(canvas.toDataURL('image/jpeg', 0.8));
